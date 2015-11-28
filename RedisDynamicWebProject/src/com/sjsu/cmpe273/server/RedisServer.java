@@ -16,12 +16,12 @@ import redis.clients.jedis.Jedis;
 public class RedisServer {
 	private SortedMap<Long, Node> nodeMap;
 	private List<Long> nodeHashSet;
-	
+
 	public RedisServer() {
 		nodeMap = new TreeMap<Long, Node>();
 		nodeHashSet = new ArrayList<Long>();
 	}
-	
+
 	public List<Long> getDataSet() {
 		return nodeHashSet;
 	}
@@ -37,79 +37,90 @@ public class RedisServer {
 	public void setNodeMap(SortedMap<Long, Node> nodeMap) {
 		this.nodeMap = nodeMap;
 	}
-	
+
 	public void addNodeToCluster(String ipAddress, int port) throws Exception{
 		Node node = new Node(ipAddress, port);
 		Node affectedNode = null;
+		Long lastNodeHash = null;
 		//nodeMap.put(Hasher.getHash(node), node);
 		if(checkIfNodeIsUp(node)){
 			nodeHashSet.add(Hasher.getHash(node));
 			Collections.sort(nodeHashSet);
-			
-			//If it is the first node, add it immediately and exit the function
+
+			//If it is the first node, add it immediately and exit the method
 			if(nodeMap.size() == 0){
 				nodeMap.put(Hasher.getHash(node), node);
 				return;
 			}
-			//If the size of cluster is greater than 1
+			//Size of cluster is greater than 1
 			//TODO Migrate the adjacent nodes data
 			//Find the index at which the node is placed
 			int nodeIndex = nodeHashSet.indexOf(Hasher.getHash(node));
+			nodeMap.put(Hasher.getHash(node), node);
 			//Get the node immediately after it
 			if(nodeIndex == nodeHashSet.size()-1){
 				//This is the last node in the map. The affected node is the one at 0th position.
 				affectedNode = nodeMap.get(nodeHashSet.get(0));
+				//Checking for all data pairs whose hash values are greater than last node's hash and are assigned to node 0
+				lastNodeHash = nodeHashSet.get(nodeHashSet.size()-1);
 			}else{
 				affectedNode = nodeMap.get(nodeHashSet.get(nodeIndex+1));
 			}
-			//Get all the keys from this(old) node
+
 			Jedis oldJedis = affectedNode.getJedis();
-			Jedis newJedis = node.getJedis();
 			Long newNodeHash = Hasher.getHash(node);
-			
+			//Get all the keys from this(old) node
+			oldJedis.connect();
 			Set<String> oldKeySet = oldJedis.keys("*");
-			List<RedisData> movableKeys = new ArrayList<RedisData>();
-			for (String currentKey : oldKeySet) {
-				if()
+			if (!oldKeySet.isEmpty()){
+				RedisData currentMovingData = null;
+				for (String currentKey : oldKeySet) {
+					if((Hasher.getHash(currentKey) < newNodeHash) || 
+							//Checking if data is set in node 0 and has a hash greater than the last node in the node map
+							(lastNodeHash!= null && Hasher.getHash(currentKey) > lastNodeHash)){
+						//This key is to be moved
+						currentMovingData = new RedisData(currentKey, oldJedis.get(currentKey));
+						//Deleting from the old node
+						oldJedis.del(currentKey);
+						System.out.println("Moving key :"+currentKey+" from "+affectedNode.getIpAddress()+":"+affectedNode.getPort()+
+								" to :"+node.getIpAddress()+":"+node.getPort());
+						//Inserting data into the cluster
+						insertData(currentMovingData);
+					}
+				}
 			}
-			
-			
-			//Prepare a list of all the keys whose hash is less than the new node's hash
-			//Get the values of all these data pairs and store it in a key-value list
-			//Delete these key-val pairs from the old node
-			//Insert them into the new node
-			//Add the new node to the map and data set
-			
+			oldJedis.disconnect();
+			oldJedis.close();
 		}else{
 			throw new Exception("The node at IP : "+ipAddress+":"+port+" is not up.");
-			}	
+		}	
 	}
-	
+
 	public void removeNode(Node node){
 		//TODO Migrate the data from this node into the adjacent nodes and then Remove the node from the map
-		
+
 
 		nodeMap.remove(Hasher.getHash(node));
 	}
-	
+
 	public List<RedisData> getAllData(){
 		//TODO Return data from all the Redis nodes
 		List<RedisData> outputList = null;
-		
+
 		for(Long hash : nodeHashSet){
 			if(outputList == null){
 				outputList = new ArrayList<RedisData>();
 			}
 			outputList.addAll(getDataFromNode(nodeMap.get(hash)));
 		}
-		
+
 		if (outputList != null) {
-	        return outputList;
-	    } else {
-	        throw new NullPointerException(" There are no nodes available in the cluster. ");
-	    }
+			return outputList;
+		} else {
+			throw new NullPointerException(" There are no nodes available in the cluster. ");
+		}
 	}
-	
+
 	public List<RedisData> getDataFromNode(Node node){
 		//TODO Return data from a single Redis node
 		List<RedisData> outputList = null;
@@ -128,7 +139,7 @@ public class RedisServer {
 		}		
 		return outputList;
 	}
-	
+
 	public boolean checkIfNodeIsUp(Node node){
 		boolean isConnected = false;
 		if(node.getJedis().isConnected()){
@@ -146,7 +157,7 @@ public class RedisServer {
 		}
 		return isConnected;		
 	}
-	
+
 	public Node findNodeForData(RedisData data){
 		//TODO Find the node to which this key is to be assigned to
 		Long keyHash = Hasher.getHash(data);
@@ -159,7 +170,7 @@ public class RedisServer {
 		}		
 		return nodeMap.get(nodeHashSet.get(0));
 	}
-	
+
 	public Node insertData(RedisData data) throws NullPointerException{
 		//TODO insert data into the assigned node and return the node to which it is assigned to		
 		Node assignedNode = null;
@@ -168,22 +179,23 @@ public class RedisServer {
 			Jedis currJedis = assignedNode.getJedis();
 			//Connect to the node and perform insertion
 			currJedis.connect();
+			System.out.println("Key : "+data.getKey()+" sent to node : "+assignedNode.getIpAddress()+":"+assignedNode.getPort());
 			currJedis.set(data.getKey(), data.getValue().toString());
 			currJedis.disconnect();
 			currJedis.close();
 		}		
-		
+
 		if (assignedNode != null) {
-	        return assignedNode;
-	    } else {
-	        throw new NullPointerException("Node is not available for data : Key : "+data.getKey()+" -- "+ data.getValue());
-	    }
+			return assignedNode;
+		} else {
+			throw new NullPointerException("Node is not available for data : Key : "+data.getKey()+" -- "+ data.getValue());
+		}
 	}
-	
+
 	public void removeFromCluster(String key){
-		
+
 	}
-	
-	
+
+
 
 }
