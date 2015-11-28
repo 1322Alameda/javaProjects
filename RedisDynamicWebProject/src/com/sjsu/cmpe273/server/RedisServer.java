@@ -2,7 +2,9 @@ package com.sjsu.cmpe273.server;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -56,7 +58,6 @@ public class RedisServer {
 			//TODO Migrate the adjacent nodes data
 			//Find the index at which the node is placed
 			int nodeIndex = nodeHashSet.indexOf(Hasher.getHash(node));
-			nodeMap.put(Hasher.getHash(node), node);
 			//Get the node immediately after it
 			if(nodeIndex == nodeHashSet.size()-1){
 				//This is the last node in the map. The affected node is the one at 0th position.
@@ -68,27 +69,26 @@ public class RedisServer {
 			}
 
 			Jedis oldJedis = affectedNode.getJedis();
-			Long newNodeHash = Hasher.getHash(node);
+			Long newNodeHash = Hasher.getHash(node); 
 			//Get all the keys from this(old) node
 			oldJedis.connect();
 			Set<String> oldKeySet = oldJedis.keys("*");
 			if (!oldKeySet.isEmpty()){
-				RedisData currentMovingData = null;
 				for (String currentKey : oldKeySet) {
 					if((Hasher.getHash(currentKey) < newNodeHash) || 
 							//Checking if data is set in node 0 and has a hash greater than the last node in the node map
 							(lastNodeHash!= null && Hasher.getHash(currentKey) > lastNodeHash)){
 						//This key is to be moved
-						currentMovingData = new RedisData(currentKey, oldJedis.get(currentKey));
-						//Deleting from the old node
-						oldJedis.del(currentKey);
+						//Migrating from the old node to the new node
 						System.out.println("Moving key :"+currentKey+" from "+affectedNode.getIpAddress()+":"+affectedNode.getPort()+
 								" to :"+node.getIpAddress()+":"+node.getPort());
-						//Inserting data into the cluster
-						insertData(currentMovingData);
+						//Migrate data to the new node
+						oldJedis.migrate(ipAddress, port, currentKey, 0, 5);
 					}
 				}
 			}
+
+			nodeMap.put(Hasher.getHash(node), node);
 			oldJedis.disconnect();
 			oldJedis.close();
 		}else{
@@ -103,19 +103,19 @@ public class RedisServer {
 		nodeMap.remove(Hasher.getHash(node));
 	}
 
-	public List<RedisData> getAllData(){
+	public Map<Node,List<RedisData>> getAllData(){
 		//TODO Return data from all the Redis nodes
-		List<RedisData> outputList = null;
-
+		Map<Node,List<RedisData>> outputMap = null;
+		Node currentNode = null;
 		for(Long hash : nodeHashSet){
-			if(outputList == null){
-				outputList = new ArrayList<RedisData>();
+			if(outputMap == null){
+				outputMap = new HashMap<Node, List<RedisData>>();
 			}
-			outputList.addAll(getDataFromNode(nodeMap.get(hash)));
+			currentNode = nodeMap.get(hash);
+			outputMap.put(currentNode, getDataFromNode(currentNode));			
 		}
-
-		if (outputList != null) {
-			return outputList;
+		if (outputMap != null) {
+			return outputMap;
 		} else {
 			throw new NullPointerException(" There are no nodes available in the cluster. ");
 		}
