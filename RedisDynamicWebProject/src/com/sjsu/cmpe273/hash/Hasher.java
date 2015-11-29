@@ -25,6 +25,11 @@ public class Hasher {
 	
 	}
 	
+	public static Long getReplicaHash(SuperNode superNode, int replicaID){
+		String hashString = "http://"+superNode.getIpAddress()+":"+superNode.getPort()+"/ -- "+replicaID;
+		return murmurHash.hash(hashString);
+	}
+	
 	public static Integer[] getNumArray(Integer input){
 		int len = Integer.toString(input).length();
 		Integer[] iarray = new Integer[len];
